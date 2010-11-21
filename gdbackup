@@ -112,13 +112,14 @@ log "starting backup"
 (
 cd $src &&
 seq $dst/$datadir/archive.tar |
-	gnutar \
-		-g $dst/$datadir/metadata --format=pax \
-		-M -L $SIZE -c \
-		$EXCLUDEOPTS \
-		-f $dst/$datadir/archive.tar \
-		.
+gnutar \
+	-g $dst/$datadir/metadata --format=pax \
+	-M -L $SIZE -c \
+	$EXCLUDEOPTS \
+	-f $dst/$datadir/archive.tar \
+	.
 )
+
 log "finished backup"
 
 if [ $? -eq 0 ]; then

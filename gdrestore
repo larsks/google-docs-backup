@@ -1,0 +1,44 @@
+#!/bin/sh
+
+ACTION=-t
+
+seq () {
+	local name=${1%.tar}
+	local i=2
+
+	while :; do
+		vol=$(printf "$name-%04d.tar\n" $i)
+		: $(( i++ ))
+		[ -f "$vol" ] || exit
+		echo n $vol
+	done
+}
+
+usage () {
+	echo "$0: usage: $0 [-lrv] archive.tar"
+}
+
+while getopts 'lrv' ch; do
+	case $ch in
+	(l)	ACTION=-t;;
+	(r)	ACTION=-x;;
+	(v)	VERBOSE=1;;
+
+	(\?)	usage >&2
+		exit 2
+		;;
+	esac
+done
+shift $(( $OPTIND - 1 ))
+
+if [ -d $1 ]; then
+	src=$1/archive.tar
+else
+	src=$1
+fi
+
+seq $src | 
+gnutar \
+	-M $ACTION ${VERBOSE:+-v} \
+	-f $src
+
