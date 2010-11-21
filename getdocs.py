@@ -1,7 +1,5 @@
 #!/usr/bin/python
 
-# feed = client.GetDocList(uri='/feeds/default/private/full/-/{http://schemas.google.com/g/2005#kind}application/msword')
-
 import os
 import sys
 import optparse
@@ -16,6 +14,81 @@ from configdict.configdict import ConfigDict
 
 GOOGLE_MIME_TYPE_SCHEMA = '{http://schemas.google.com/g/2005#kind}'
 
+class GDocsError (Exception):
+    pass
+
+class AuthenticationError(GDocsError):
+    pass
+
+class AuthenticationRequired(GDocsError):
+    pass
+
+def authenticated(f):
+    def _ (self, *args, **kwargs):
+        if not self.authenticated:
+            raise AuthenticationRequired()
+        return f(self, *args, **kwargs)
+
+    return _
+
+class GDocs (object):
+    source = 'GDdocs (python)'
+
+    def __init__ (self, credentials=None):
+        self.authenticated = False
+        if credentials is not None:
+            self.credentials = credentials
+
+    def set_credentials(self, credentials):
+        self.credentials = credentials
+
+    def login(self, credentials=None):
+        if credentials is None:
+            credentials = self.credentials
+            if self.credentials is None or ('user' not in credentials or
+                    'pass' not in credentials):
+                raise AuthenticationError('missing credentials')
+
+        self.client = gdata.docs.client.DocsClient()
+        self.client.ClientLogin(credentials['user'],
+                credentials['pass'],
+                self.source)
+        self.authenticated = True
+
+    @authenticated
+    def list(self, uri=None):
+        feed = self.client.GetDocList(uri=uri, limit=50)
+        while True:
+            for entry in feed.entry:
+                yield entry
+
+            if feed.GetNextLink() is None:
+                break
+
+            feed = self.client.GetDocList(feed.GetNextLink().href,
+                    limit=50)
+
+    def query(self):
+        return gdata.docs.service.DocumentQuery(feed='/feeds/default')
+
+    @authenticated
+    def title(self, title):
+        q = self.query()
+        q['title'] = title
+        q['title-exact'] = 'true'
+        q['showfolders'] = 'true'
+
+        feed = self.client.GetDocList(uri=q.ToUri())
+        if len(feed.entry) != 1:
+            raise KeyError(title)
+
+        return feed.entry[0]
+
+    @authenticated
+    def contents_query(self, folder):
+        folder = self.title(folder)
+        return gdata.service.Query(folder.content.src)
+
 def parse_args():
     p = optparse.OptionParser()
     p.add_option('-c', '--config')
@@ -24,6 +97,7 @@ def parse_args():
     p.add_option('-f', '--folder')
     p.add_option('-t', '--type', action='append',
             help='Retrieve only documents of type TYPE.  ')
+    p.add_option('-m', '--maxretry', default='5')
     p.add_option('-q', '--query')
     p.add_option('-d', '--destination', default='.')
     p.add_option('-D', '--download', action='store_true')
@@ -38,8 +112,6 @@ def main():
         sys.exit(1)
 
     cf = ConfigDict()
-    query = \
-    gdata.docs.service.DocumentQuery(feed='/feeds/default')
 
     if opts.config:
         cf.parse(opts.config)
@@ -56,6 +128,7 @@ def main():
 
     client = gdata.docs.client.DocsClient()
     client.ClientLogin(opts.user, opts.password, client.source)
+    query = gdata.docs.service.DocumentQuery(feed='/feeds/default')
 
     if opts.folder:
         f_query = \
@@ -91,15 +164,29 @@ def main():
     for doc in docs:
         print doc.title.text, doc.GetDocumentType()
         if opts.download:
-            print '[downloading %s]' % doc.title.text
             dst = os.path.join(opts.destination, '%s' % doc.title.text)
+
+            if os.path.exists(dst) and os.path.getsize(dst) > 0:
+                print '%s: exists, skipping' % doc.title.text
+                continue
+
+            tries = 0
             while True:
                 try:
+                    print '%s [%d]: downloading...' % (doc.title.text,
+                            tries)
                     client.Download(doc, dst)
                     break
-                except httplib.IncompleteRead, detail:
+                except gdata.client.RequestError, detail:
+                    print >>sys.stderr, 'Download failed: %s' % detail.status
                     tries += 1
-                    if tries > opts.maxretry:
+                    if tries > int(opts.maxretry):
+                        raise
+
+                except Exception, detail:
+                    print >>sys.stderr, 'Download failed: %s' % detail
+                    tries += 1
+                    if tries > int(opts.maxretry):
                         raise
 
 if __name__ == '__main__':
