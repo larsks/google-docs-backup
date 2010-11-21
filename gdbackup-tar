@@ -1,0 +1,128 @@
+#!/bin/bash
+
+SIZE=1000M
+NOW=$(date +%Y-%m-%dT%H:%M:%S)
+
+SCRIPTPATH=$(cd $(dirname $0) && pwd)/${0##*/}
+
+usage () {
+	echo "$0: usage: $0 [ -L size ] src dst"
+}
+
+log () {
+	echo "$(date +"%Y-%m-%d %H:%M:%S") $(basename $0) $*" >&2
+}
+
+die () {
+	log "ERROR: $*"
+	exit 1
+}
+
+tar_helper () {
+	name=${TAR_ARCHIVE%%.tar*}.tar
+
+	log "preparing $name volume $TAR_VOLUME."
+
+	case $TAR_SUBCOMMAND in
+		(-c)		;;
+
+		(-d|-x|-t)	[ -r ${name:-$TAR_ARCHIVE}-$TAR_VOLUME ] || exit 1
+				;;
+
+		(*)		exit 1
+				;;
+	esac
+
+	echo ${name:-$TAR_ARCHIVE}-$TAR_VOLUME >&$TAR_FD
+}
+
+seq () {
+	local name=${1%.tar}
+	local i=2
+
+	while :; do
+		printf "n $name-%04d.tar\n" $(( i++ ))
+	done
+}
+
+if [ "$TAR_ARCHIVE" ]; then
+	tar_helper
+	exit $?
+fi
+
+while getopts 'L:X:' ch; do
+	case $ch in
+	(L)	SIZE=$OPTARG;;
+	(X)	EXCLUDEFROM=$OPTARG;;
+	esac
+done
+shift $(( $OPTIND - 1 ))
+
+src=$1
+dst=$2
+
+if ! [ "$src" -a "$dst" ]; then
+	usage >&2
+	exit 1
+fi
+
+if [ ! -d "$src" ]; then
+	die "$src: not a directory." >&2
+fi
+
+if [ "$EXCLUDEFROM" ] && [ ! -f "$EXCLUDEFORM" ]; then
+	die "exclude file \"$EXCLUDEFROM\" does not exist."
+fi
+
+#
+# We starting modifying the filesystem here.
+#
+if [ ! -f $dst/metadata ]; then
+	install -d -m 700 $dst
+	echo "BACKUP_SOURCE=$src" > $dst/metadata
+else
+	. $dst/metadata
+	if [ $src != $BACKUP_SOURCE ]; then
+		die "$dst was created from $BACKUP_SOURCE and you are trying to backup $src."
+	fi
+fi
+
+install -d -m 700 $dst/data
+datadir=$(cd $dst && mktemp -d "data/$NOW-XXXXXX")
+install -d -m 700 $dst/$datadir
+
+if [ -f "$dst/latest/metadata" ]; then
+	log "this is an incremental backup."
+	backuptype=incremental
+	install -m 600 $dst/latest/metadata $dst/$datadir/metadata
+else
+	log "this is a full backup."
+	backuptype=full
+fi
+
+if [ "$EXCLUDEFROM" ]; then
+	install -m 600 $EXCLUDEFROM $dst/exclude
+fi
+
+if [ -f "$dst/exclude" ]; then
+	EXCLUDEOPTS="-X $dst/exclude"
+fi
+
+log "starting backup"
+(
+cd $src &&
+seq $dst/$datadir/archive.tar |
+	gnutar \
+		-g $dst/$datadir/metadata --format=pax \
+		-M -L $SIZE -c \
+		$EXCLUDEOPTS \
+		-f $dst/$datadir/archive.tar \
+		.
+)
+log "finished backup"
+
+if [ $? -eq 0 ]; then
+	rm -f $dst/latest
+	(cd $dst && ln -s $datadir latest)
+fi
+
